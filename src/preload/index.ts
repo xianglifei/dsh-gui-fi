@@ -3,22 +3,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 // --- Finder 服务 / fi:// 深链投递（见 src/main/finder-open.ts）---
 // 主进程在「确认时」与「窗口每次加载完成」两个时机发送；事件可能早于
 // fi-sidebar 客户端 boot 到达，这里先排队，客户端订阅 onOpen 时冲队列。
-// 回调执行完回执 done，主进程收到才清 pending（重复投递无害：建区幂等 +
-// blank 会话复用）。
+// 回执语义：客户端跑完 startNewTaskIn 后显式 ack（成功 ok:true / 失败带
+// error），主进程据此清 pending 或超时重投——不自动回执。
 let openListener: ((path: string) => void) | null = null
 const openQueue: { path: string }[] = []
 
-function notifyOpenWorkspace(path: string): void {
-  try {
-    openListener?.(path)
-  } finally {
-    ipcRenderer.send('fi:open-workspace:done', { path })
-  }
-}
-
 ipcRenderer.on('fi:open-workspace', (_event, payload: { path?: unknown }) => {
   if (payload !== null && typeof payload === 'object' && typeof payload.path === 'string') {
-    if (openListener !== null) notifyOpenWorkspace(payload.path)
+    if (openListener !== null) openListener(payload.path)
     else openQueue.push({ path: payload.path })
   }
 })
@@ -79,8 +71,11 @@ contextBridge.exposeInMainWorld('fi', {
       openListener = callback
       while (openQueue.length > 0) {
         const payload = openQueue.shift()
-        if (payload !== undefined) notifyOpenWorkspace(payload.path)
+        if (payload !== undefined) callback(payload.path)
       }
+    },
+    ack: (path: string, error: string | null) => {
+      ipcRenderer.send('fi:open-workspace:done', { path, ok: error === null, error })
     },
   },
 })

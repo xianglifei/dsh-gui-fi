@@ -24,6 +24,12 @@ const WORKFLOW_BUNDLE_ID = 'com.github.xianglifei.fi.finder-open-workflow'
 const WORKFLOW_VERSION = '2'
 const SERVICE_MENU_LABEL = '在 fi 中打开'
 
+/** 诊断观测（默认关）：FI_FINDER_TRACE=1 时逐跳打印接收→校验→确认→投递链路。 */
+const TRACE = process.env.FI_FINDER_TRACE !== undefined
+function trace(...args: unknown[]): void {
+  if (TRACE) console.log('[finder-open]', ...args)
+}
+
 /**
  * 服务脚本的拉起方式：
  * - exec（源码安装形态）：LaunchServices 里没有可认领 fi:// 的 app bundle，
@@ -388,11 +394,55 @@ export function registerOpenFolderBridge(options: {
   const fromArgv = (process.argv ?? []).find(
     (arg) => typeof arg === 'string' && arg.startsWith(OPEN_URL_PREFIX),
   )
-  if (fromArgv !== undefined) queuedUrl = fromArgv
+  if (fromArgv !== undefined) {
+    queuedUrl = fromArgv
+    trace('启动参数命中 URL，已缓冲', fromArgv)
+  }
+
+  // 对话框不能在原生回调（second-instance 的 emit）里同步弹：嵌套原生模态
+  // 循环会让主进程被 SIGKILL（实测 Killed: 9）。统一推迟到下一个 tick，且
+  // 用 dialogActive 合并快速连点（后到覆盖先到，不叠加弹窗）。
+  // 冷启动时窗口可能尚未显示（dsh 未就绪、从未 loadURL）：挂在隐藏窗口上的
+  // 模态框不可见却阻塞整个主线程（dsh 启动随之卡死）——窗口可见前轮询等待。
+  let deferredUrl: string | null = null
+  let dialogActive = false
+
+  function pumpDeferred(): void {
+    if (dialogActive || deferredUrl === null) return
+    const win = options.getWindow()
+    if (win !== null && !win.isDestroyed() && !win.isVisible()) {
+      setTimeout(pumpDeferred, 500)
+      return
+    }
+    const url = deferredUrl
+    deferredUrl = null
+    dialogActive = true
+    try {
+      handleOpenUrl(url) // 同步对话框在此阻塞
+    } finally {
+      dialogActive = false
+    }
+  }
 
   function consumeUrl(url: string): void {
-    if (app.isReady()) handleOpenUrl(url)
-    else queuedUrl = url
+    if (!app.isReady()) {
+      queuedUrl = url
+      return
+    }
+    deferredUrl = url
+    setTimeout(pumpDeferred, 0)
+  }
+
+  // 投递可靠性：客户端只在 startNewTaskIn 成功后回执 ok（sessions.create 实测
+  // 可能静默挂住）；超时重投收敛——startSession 复用 blank 会话，重投幂等。
+  const DELIVERY_TIMEOUT_MS = 10_000
+  const DELIVERY_MAX_ATTEMPTS = 3
+  let deliveryTimer: NodeJS.Timeout | null = null
+  let deliveryAttempts = 0
+
+  function stopDeliveryTimer(): void {
+    if (deliveryTimer !== null) clearTimeout(deliveryTimer)
+    deliveryTimer = null
   }
 
   function deliverPending(): void {
@@ -400,14 +450,33 @@ export function registerOpenFolderBridge(options: {
     if (options.dsh.state !== 'ready') return // 状态页加载完成不算数，等 dsh URL 的下一次 did-finish-load
     const win = options.getWindow()
     if (win === null || win.isDestroyed()) return
+    deliveryAttempts += 1
+    trace(`投递 fi:open-workspace（第 ${deliveryAttempts} 次）`, pendingPath)
     win.webContents.send('fi:open-workspace', { path: pendingPath })
+    stopDeliveryTimer()
+    if (deliveryAttempts < DELIVERY_MAX_ATTEMPTS) {
+      deliveryTimer = setTimeout(() => {
+        deliveryTimer = null
+        if (pendingPath === null) return
+        trace('投递未收到成功回执，重投', pendingPath)
+        deliverPending()
+      }, DELIVERY_TIMEOUT_MS)
+    } else {
+      console.warn(`[finder-open] 打开请求 ${DELIVERY_MAX_ATTEMPTS} 次投递未确认，放弃：${pendingPath}`)
+      pendingPath = null
+      deliveryAttempts = 0
+    }
   }
 
   function handleOpenUrl(url: string): void {
     const path = parseOpenFolderUrl(url)
-    if (path === null) return
+    if (path === null) {
+      trace('URL 解析失败，忽略', url)
+      return
+    }
     const valid = isValidLocalFolder(path)
     if (!valid.ok) {
+      trace('路径校验失败，忽略', valid.error, path)
       console.warn(`[finder-open] 忽略打开请求（${valid.error}）：${path}`)
       return
     }
@@ -426,8 +495,10 @@ export function registerOpenFolderBridge(options: {
     }
     const response =
       win !== null && !win.isDestroyed() ? dialog.showMessageBoxSync(win, box) : dialog.showMessageBoxSync(box)
+    trace('确认对话框结果', response === 0 ? '打开' : '取消', path)
     if (response !== 0) return
     pendingPath = path
+    deliveryAttempts = 0
     options.showWindow()
     deliverPending()
   }
@@ -436,15 +507,30 @@ export function registerOpenFolderBridge(options: {
   app.on('open-url', (event, url) => {
     if (typeof url !== 'string' || !url.startsWith(OPEN_URL_PREFIX)) return
     event.preventDefault()
+    trace('open-url 事件', url)
     consumeUrl(url)
   })
 
-  ipcMain.on('fi:open-workspace:done', () => {
-    pendingPath = null
+  ipcMain.on('fi:open-workspace:done', (_event, payload: { path?: unknown; ok?: unknown; error?: unknown }) => {
+    trace('客户端回执', JSON.stringify(payload))
+    if (pendingPath === null) return
+    if (payload?.ok === true) {
+      stopDeliveryTimer()
+      deliveryAttempts = 0
+      pendingPath = null
+    } else if (typeof payload?.error === 'string') {
+      // 客户端明确失败（建区/开会话报错）：重投无意义，落地警告。
+      stopDeliveryTimer()
+      deliveryAttempts = 0
+      console.warn(`[finder-open] 打开请求失败：${payload.error}（${pendingPath}）`)
+      pendingPath = null
+    }
+    // 其余情况（无 ack/未知形状）：留给超时重投。
   })
 
   return {
     handleInstanceArgv(argv: string[]): void {
+      trace('second-instance argv', JSON.stringify(argv))
       const url = (argv ?? []).find((arg) => typeof arg === 'string' && arg.startsWith(OPEN_URL_PREFIX))
       if (url !== undefined) consumeUrl(url)
     },
@@ -452,7 +538,7 @@ export function registerOpenFolderBridge(options: {
       if (queuedUrl === null) return
       const url = queuedUrl
       queuedUrl = null
-      handleOpenUrl(url)
+      consumeUrl(url) // ready 后等价于进延迟队列
     },
     attachWindowHooks(win: BrowserWindow): void {
       win.webContents.on('did-finish-load', () => deliverPending())

@@ -3236,9 +3236,12 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 
 			// Finder 服务 / fi:// 深链投递（主进程 finder-open.ts 经 preload 队列）：
 			// 与项目模式「在文件夹里新建任务」同一动作；浏览器直开 dsh（无
-			// window.fi 桥）或插件降级时静默跳过，pending 由主进程留存待重投。
+			// window.fi 桥）或插件降级时静默跳过，主进程留存待重投。回执只在
+			// 动作完成后发（成功 null / 失败带错误文案），主进程据此清账或重投。
 			if (typeof window !== "undefined" && window.fi?.openWorkspace) {
-				window.fi.openWorkspace.onOpen((dirPath) => void startNewTaskIn(dirPath));
+				window.fi.openWorkspace.onOpen((dirPath) => {
+					startNewTaskIn(dirPath).then((err) => window.fi.openWorkspace.ack(dirPath, err));
+				});
 			}
 
 			// 选区引用（0.6）：探测/确保 sendSession 补丁就位。conversation 服务由
