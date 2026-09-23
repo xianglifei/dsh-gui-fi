@@ -13,8 +13,12 @@ const compiled = new URL('../out/test/finder-open.js', import.meta.url)
 if (!existsSync(compiled)) {
   assert.fail('缺少编译产物 out/test/finder-open.js，先运行: pnpm exec tsup src/main/finder-open.ts --format cjs --external electron --outDir out/test')
 }
-const { parseOpenFolderUrl, isValidLocalFolder, installFinderOpenWorkflow, FINDER_OPEN_SHELL_SCRIPT } =
-  createRequire(import.meta.url)(compiled.pathname)
+const {
+  parseOpenFolderUrl,
+  isValidLocalFolder,
+  installFinderOpenWorkflow,
+  buildFinderOpenScript,
+} = createRequire(import.meta.url)(compiled.pathname)
 
 const silentLogger = { info: () => {}, warn: () => {} }
 const makeHome = () => mkdtempSync(join(tmpdir(), 'fi-finder-test-'))
@@ -22,6 +26,13 @@ const trackRefresh = () => {
   const state = { calls: 0 }
   return { state, fn: () => { state.calls += 1 } }
 }
+// node 跑测试时 process.defaultApp 为 undefined（url 形态）；显式传 launcher 保证确定性
+const EXEC_LAUNCHER = {
+  mode: 'exec',
+  electronPath: '/opt/electron/dist/Electron.app/Contents/MacOS/Electron',
+  appRoot: '/Users/x/Code/Github/fi',
+}
+const URL_LAUNCHER = { mode: 'url' }
 
 // ---------------------------------------------------------------------------
 // parseOpenFolderUrl
@@ -86,7 +97,7 @@ const resourcesWflow = (home) => join(home, 'Library', 'Services', 'Open in fi.w
 test('install: 首装写齐 Info.plist 与双位置 document.wflow 并刷新索引', () => {
   const home = makeHome()
   const refresh = trackRefresh()
-  installFinderOpenWorkflow({ platform: 'darwin', homeDir: home, logger: silentLogger, refreshServicesIndex: refresh.fn })
+  installFinderOpenWorkflow({ platform: 'darwin', homeDir: home, launcher: URL_LAUNCHER, logger: silentLogger, refreshServicesIndex: refresh.fn })
 
   const plist = readFileSync(contentsPlist(home), 'utf8')
   assert.match(plist, /在 fi 中打开/)
@@ -110,7 +121,7 @@ test('install: 首装写齐 Info.plist 与双位置 document.wflow 并刷新索�
 test('install: 内容未变重跑不写文件、不刷新索引', () => {
   const home = makeHome()
   const refresh = trackRefresh()
-  const opts = { platform: 'darwin', homeDir: home, logger: silentLogger, refreshServicesIndex: refresh.fn }
+  const opts = { platform: 'darwin', homeDir: home, launcher: URL_LAUNCHER, logger: silentLogger, refreshServicesIndex: refresh.fn }
   installFinderOpenWorkflow(opts)
   assert.equal(refresh.state.calls, 1)
   installFinderOpenWorkflow(opts)
@@ -121,7 +132,7 @@ test('install: 内容未变重跑不写文件、不刷新索引', () => {
 test('install: 外部改动后重装会重写并再次刷新索引（自愈）', () => {
   const home = makeHome()
   const refresh = trackRefresh()
-  const opts = { platform: 'darwin', homeDir: home, logger: silentLogger, refreshServicesIndex: refresh.fn }
+  const opts = { platform: 'darwin', homeDir: home, launcher: URL_LAUNCHER, logger: silentLogger, refreshServicesIndex: refresh.fn }
   installFinderOpenWorkflow(opts)
   appendFileSync(contentsPlist(home), '\n<!-- touched -->\n')
   writeFileSync(contentsWflow(home), 'corrupted', 'utf8')
@@ -155,27 +166,50 @@ test('install: 写入失败只警告不抛出（不阻断启动）', () => {
 })
 
 // ---------------------------------------------------------------------------
-// shell 脚本本体（语法 + URL 构造行为）
+// shell 脚本本体（两种拉起形态：语法 + 选参/编码/传参行为）
 // ---------------------------------------------------------------------------
 
-test('shell 脚本通过 zsh -n 语法检查', () => {
-  const res = spawnSync('/bin/zsh', ['-n', '-'], { input: FINDER_OPEN_SHELL_SCRIPT })
-  assert.equal(res.status, 0, `stderr: ${res.stderr}`)
+test('shell 脚本（exec/url 两形态）通过 zsh -n 语法检查', () => {
+  for (const script of [buildFinderOpenScript(EXEC_LAUNCHER), buildFinderOpenScript(URL_LAUNCHER)]) {
+    const res = spawnSync('/bin/zsh', ['-n', '-'], { input: script })
+    assert.equal(res.status, 0, `stderr: ${res.stderr}`)
+  }
 })
 
-test('shell 脚本只取第一个目录参数并产出编码正确的 fi:// URL', () => {
+test('exec 形态：后台直启 Electron，参数为 appRoot 与编码后的 URL（只取第一个目录）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fi-finder-script-'))
   const file = join(dir, 'f.txt')
   writeFileSync(file, 'x', 'utf8')
-  // 把真实 open 换成 echo：验证选参与编码逻辑，绝不触发系统协议拉起应用
-  const script = FINDER_OPEN_SHELL_SCRIPT.replace('/usr/bin/open ', 'echo ')
+  // /bin/echo 当 Electron：验证参数序与编码，绝不真拉起应用；
+  // 去掉生产用的 /dev/null 重定向以便捕获输出
+  const script = buildFinderOpenScript({ mode: 'exec', electronPath: '/bin/echo', appRoot: '/app root' })
+    .replace(' >/dev/null 2>&1', '')
 
   const res = spawnSync('/bin/zsh', ['-s', '--', file, dir], { input: script })
   assert.equal(res.status, 0, `stderr: ${res.stderr}`)
-  assert.equal(res.stdout.toString().trim(), `fi://workspace/open?path=${encodeURIComponent(dir)}`)
+  assert.equal(res.stdout.toString().trim(), `/app root fi://workspace/open?path=${encodeURIComponent(dir)}`)
 
-  // 全是非目录参数时不产出 URL
+  // 全是非目录参数时不产出任何调用
   const none = spawnSync('/bin/zsh', ['-s', '--', file], { input: script })
   assert.equal(none.status, 0)
   assert.equal(none.stdout.toString().trim(), '')
+})
+
+test('exec 形态安装：绝对路径烘焙进 document.wflow（XML 转义后可还原）', () => {
+  const home = makeHome()
+  const refresh = trackRefresh()
+  installFinderOpenWorkflow({ platform: 'darwin', homeDir: home, launcher: EXEC_LAUNCHER, logger: silentLogger, refreshServicesIndex: refresh.fn })
+  const wflow = readFileSync(contentsWflow(home), 'utf8')
+  assert.match(wflow, /\/opt\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/)
+  assert.match(wflow, /\/Users\/x\/Code\/Github\/fi/)
+  assert.match(wflow, /fi:\/\/workspace\/open\?path=/)
+  assert.equal(readFileSync(resourcesWflow(home), 'utf8'), wflow)
+})
+
+test('url 形态：脚本经 /usr/bin/open 打开编码后的 URL（open 换 echo 验证）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fi-finder-script-'))
+  const script = buildFinderOpenScript(URL_LAUNCHER).replace('/usr/bin/open ', 'echo ')
+  const res = spawnSync('/bin/zsh', ['-s', '--', dir], { input: script })
+  assert.equal(res.status, 0, `stderr: ${res.stderr}`)
+  assert.equal(res.stdout.toString().trim(), `fi://workspace/open?path=${encodeURIComponent(dir)}`)
 })

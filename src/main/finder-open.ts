@@ -21,11 +21,35 @@ const SCHEME = 'fi'
 const OPEN_URL_PREFIX = `${SCHEME}://`
 const WORKFLOW_NAME = 'Open in fi.workflow'
 const WORKFLOW_BUNDLE_ID = 'com.github.xianglifei.fi.finder-open-workflow'
-const WORKFLOW_VERSION = '1'
+const WORKFLOW_VERSION = '2'
 const SERVICE_MENU_LABEL = '在 fi 中打开'
 
-/** 导出仅为单测（zsh -n 语法检查）；安装时经 XML 转义嵌入 document.wflow。 */
-export const FINDER_OPEN_SHELL_SCRIPT = `first=""
+/**
+ * 服务脚本的拉起方式：
+ * - exec（源码安装形态）：LaunchServices 里没有可认领 fi:// 的 app bundle，
+ *   把 Electron 二进制与仓库绝对路径直接烘焙进脚本后台直启；URL 作为命令行
+ *   参数传入（非 Apple Event），fi 侧经启动参数扫描 / second-instance 接收。
+ * - url（打包后形态）：`/usr/bin/open` 走系统协议，由 app 的 Info.plist 声明
+ *   CFBundleURLTypes 认领，Electron 经 open-url 事件接收。
+ */
+export type FinderLauncher =
+  | { mode: 'exec'; electronPath: string; appRoot: string }
+  | { mode: 'url' }
+
+function defaultLauncher(): FinderLauncher {
+  if (process.defaultApp) {
+    return { mode: 'exec', electronPath: process.execPath, appRoot: resolve(process.argv[1] ?? '.') }
+  }
+  return { mode: 'url' }
+}
+
+/** 导出仅为单测（zsh -n 语法与选参/编码行为）；安装时经 XML 转义嵌入 document.wflow。 */
+export function buildFinderOpenScript(launcher: FinderLauncher): string {
+  const launch =
+    launcher.mode === 'exec'
+      ? `"${launcher.electronPath}" "${launcher.appRoot}" "${OPEN_URL_PREFIX}workspace/open?path=\${encoded}" >/dev/null 2>&1 &`
+      : `/usr/bin/open "${OPEN_URL_PREFIX}workspace/open?path=\${encoded}"`
+  return `first=""
 for item in "$@"; do
   if [ -d "$item" ]; then
     first="$item"
@@ -35,9 +59,10 @@ done
 
 if [ -n "$first" ]; then
   encoded=$(/usr/bin/osascript -l JavaScript -e 'function run(argv) { return encodeURIComponent(argv[0]); }' "$first")
-  /usr/bin/open "${OPEN_URL_PREFIX}workspace/open?path=\${encoded}"
+  ${launch}
 fi
 `
+}
 
 function escapeXml(value: string): string {
   return value
@@ -97,8 +122,8 @@ function buildInfoPlist(): string {
 `
 }
 
-function buildDocumentWorkflow(): string {
-  const escapedScript = escapeXml(FINDER_OPEN_SHELL_SCRIPT)
+function buildDocumentWorkflow(launcher: FinderLauncher): string {
+  const escapedScript = escapeXml(buildFinderOpenScript(launcher))
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -245,11 +270,12 @@ function refreshMacServicesIndex(): void {
 
 /**
  * 把 Finder 服务工作流装进 ~/Library/Services（幂等，内容变更时才刷新索引）。
- * 参数全部可注入：单测跑在临时目录、pbs 用 spy。
+ * 参数全部可注入：单测跑在临时目录、pbs 用 spy、launcher 决定脚本拉起形态。
  */
 export function installFinderOpenWorkflow(options: {
   platform: NodeJS.Platform
   homeDir?: string
+  launcher?: FinderLauncher
   logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void }
   refreshServicesIndex?: () => void
 }): void {
@@ -263,7 +289,7 @@ export function installFinderOpenWorkflow(options: {
   try {
     mkdirSync(resourcesDir, { recursive: true })
     const infoChanged = writeFileIfChanged(join(contentsDir, 'Info.plist'), buildInfoPlist())
-    const workflow = buildDocumentWorkflow()
+    const workflow = buildDocumentWorkflow(options.launcher ?? defaultLauncher())
     const workflowChanged = writeFileIfChanged(join(contentsDir, 'document.wflow'), workflow)
     // 用户 Automator workflow 读 Contents/document.wflow；系统内置 workflow 存在
     // Resources/document.wflow 形态。两处都写，避免 Finder 显示服务但运行时报
@@ -282,19 +308,17 @@ export function installFinderOpenWorkflow(options: {
 }
 
 /**
- * 注册 fi:// 协议。fi 以源码安装（未打包），LaunchServices 注册只能运行时做：
- * 每次启动重注册自愈（node_modules 重装导致 Electron 二进制挪位时注册悬空）。
- * 打包后改由 electron-builder protocols 声明接管，这里保留作兜底。
+ * 注册 fi:// 协议——仅打包形态。源码安装（裸 Electron，无 app bundle）在 macOS
+ * 上注册不了也注册不对：LaunchServices 的协议认领依赖 bundle 的 Info.plist，
+ * 就算写进 LSHandlers 也只会指向没有 fi 代码的空壳 Electron（实测
+ * kLSApplicationNotFoundErr）。源码形态的 Finder 服务走脚本直启（见
+ * buildFinderOpenScript），网页 fi:// 深链随打包开放。打包后可再由
+ * electron-builder 的 protocols 声明在安装期注册，这里运行时兜底。
  */
 export function registerFiProtocol(): void {
+  if (process.defaultApp) return
   if (process.platform !== 'darwin' && process.platform !== 'win32') return
-  if (process.defaultApp) {
-    // electron . 形态：注册必须指回仓库路径，否则协议激活拉起的是空 Electron。
-    const appRoot = resolve(process.argv[1] ?? '.')
-    app.setAsDefaultProtocolClient(SCHEME, process.execPath, [appRoot])
-  } else {
-    app.setAsDefaultProtocolClient(SCHEME)
-  }
+  app.setAsDefaultProtocolClient(SCHEME)
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +383,18 @@ export function registerOpenFolderBridge(options: {
   let queuedUrl: string | null = null
   let pendingPath: string | null = null
 
+  // 冷启动直启形态（服务脚本 exec Electron，URL 是普通命令行参数而非
+  // Apple Event）：注册发生在模块求值期（必早于 ready），直接进缓冲。
+  const fromArgv = (process.argv ?? []).find(
+    (arg) => typeof arg === 'string' && arg.startsWith(OPEN_URL_PREFIX),
+  )
+  if (fromArgv !== undefined) queuedUrl = fromArgv
+
+  function consumeUrl(url: string): void {
+    if (app.isReady()) handleOpenUrl(url)
+    else queuedUrl = url
+  }
+
   function deliverPending(): void {
     if (pendingPath === null) return
     if (options.dsh.state !== 'ready') return // 状态页加载完成不算数，等 dsh URL 的下一次 did-finish-load
@@ -396,12 +432,11 @@ export function registerOpenFolderBridge(options: {
     deliverPending()
   }
 
-  // macOS 主路径；冷启动时早于 ready 触发，先缓冲、whenReady 后消费。
+  // 打包形态的 macOS 主路径（open-url 事件）；早于 ready 到达时先缓冲。
   app.on('open-url', (event, url) => {
     if (typeof url !== 'string' || !url.startsWith(OPEN_URL_PREFIX)) return
     event.preventDefault()
-    if (app.isReady()) handleOpenUrl(url)
-    else queuedUrl = url
+    consumeUrl(url)
   })
 
   ipcMain.on('fi:open-workspace:done', () => {
@@ -411,7 +446,7 @@ export function registerOpenFolderBridge(options: {
   return {
     handleInstanceArgv(argv: string[]): void {
       const url = (argv ?? []).find((arg) => typeof arg === 'string' && arg.startsWith(OPEN_URL_PREFIX))
-      if (url !== undefined) handleOpenUrl(url)
+      if (url !== undefined) consumeUrl(url)
     },
     flushQueuedUrl(): void {
       if (queuedUrl === null) return
