@@ -3234,6 +3234,13 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 				})
 				.catch((err) => err?.message ?? String(err));
 
+			// Finder 服务 / fi:// 深链投递（主进程 finder-open.ts 经 preload 队列）：
+			// 与项目模式「在文件夹里新建任务」同一动作；浏览器直开 dsh（无
+			// window.fi 桥）或插件降级时静默跳过，pending 由主进程留存待重投。
+			if (typeof window !== "undefined" && window.fi?.openWorkspace) {
+				window.fi.openWorkspace.onOpen((dirPath) => void startNewTaskIn(dirPath));
+			}
+
 			// 选区引用（0.6）：探测/确保 sendSession 补丁就位。conversation 服务由
 			// dsh 客户端模块注册，可能晚于本模块——probe 在每次合法选区时重试，
 			// 一直失败（dsh 改版）则菜单永不出现，功能整体静默隐藏。

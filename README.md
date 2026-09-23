@@ -9,6 +9,7 @@
 - 原生窗口承载 dsh Web 界面，使用独立 profile（`~/.dsh/profiles/fi`）：与浏览器版互不干扰，会话历史/设置/API 凭据共享
 - dsh 子进程自动托管：随机端口启动、崩溃自动重启、退出干净回收、单实例
 - 桌面化细节：外部链接走系统浏览器、流式输出中关窗确认、窗口标题品牌「fi」
+- macOS Finder 右键「服务 → 在 fi 中打开」：任意文件夹直达 fi，自动登记（或复用）该项目工作区并开始新任务
 
 **任务与项目**
 
@@ -83,7 +84,9 @@ Electron main
 - **插件中心**（侧栏「插件中心」按钮）：右侧整页面板（与定时任务面板互斥，Esc 或打开任何会话退出），上下两区。上区「已安装」＝ fi 专属 profile（`~/.dsh/profiles/fi/package.json`）的依赖清单（主进程 `src/main/plugin-center.ts` 读取，名称/版本/介绍取自插件自身的 package.json，仓库地址归一化为 https 直链）——这是「在 fi 里安装」的边界，浏览器 web profile 或其他客户端装的插件不进来；内置 fi-sidebar 随壳自动 link、非用户安装，过滤不展示；空表时只显示一句安装指引。每行行尾提供卸载按钮（两步确认，3s 不确认自动复位；主进程转发 `dsh plugin --profile fi remove <name>`——已实证该命令同时清理依赖表与 bundles 列表；内置 fi-sidebar 在主进程侧即被拒绝，防止误拆 fi 自己的侧栏）。下区「推荐」＝随 fi 发版的静态精选表（`RECOMMENDED_PLUGINS`，收录 dsh-whale-widget 与 dsh-fx-review——后者把右侧栏 Markdown 预览接管为 CriticMarkup 批注审阅，批注全文一键复制交回模型修改），推荐位常驻不因已安装消失：未安装给「安装」按钮（主进程转发 `dsh plugin --profile fi add <spec>`，与启动时插件 link 同一条命令面；spec 统一为 GitHub 直装 `github:<owner>/<repo>` 形式——包在仓库子目录时带 `#path:<dir>`，pnpm 从默认分支拉取，不经 npm registry），已安装按包名匹配换成「已安装」徽章，卸载后自动变回安装按钮；安装/卸载成功经 `fi:plugins:changed` 推全量刷新，并提示重启 fi 生效（运行中的 dsh 不热加载/卸载 bundle，不自动重启以免打断会话）。客户端经 preload `window.fi.plugins` 调用；浏览器直开 dsh 网页时面板退化为仅桌面版提示。
 - **选区引用**（对话区选中文字 →「添加到当前任务」）：在对话消息（用户/助手/思考/工具输出，`data-chat-flow-kind` 判型）内选中一段文字弹出悬浮菜单，点击后引用 chip 挂到官方 `conversation.input.dock` 槽位（输入框正上方，与 todo/queue dock 同列），展开可逐条预览/移除/清空（对齐 ZCode 的 Conversation Selection：单条 8000 字、8 条、总量 16000 字上限与去重）。发送合并不拦截 UI：composer 的唯一发送出口是 `ConversationController.sendSession`（InputHub 每次动态解析服务实例），在实例上包一层把引用拼成 markdown 引用块（`> 【引用 · 来源】` 前缀行 + 逐行引用）追加到正文尾，历史以原生 blockquote 样式可见；发送失败时引用随草稿回滚回 chip。探测不到该出口（dsh 改版）时整个功能静默隐藏。
 
-- **外链**：window.open 和主框架跳转里的外部 http(s) 一律走系统浏览器；dsh 同源弹窗（如附件预览）开小窗口共享会话。
+- **Finder「在 fi 中打开」**（`src/main/finder-open.ts`）：fi 启动时把一个 Automator「快速操作」程序化写进 `~/Library/Services/Open in fi.workflow`（Info.plist 声明 NSServices：只在 Finder 里、只对文件夹右键出现；工作流本体是一个 Run Shell Script——取第一个目录参数做 URL 编码后 `open "fi://workspace/open?path=…"`；内容幂等，变更时才刷新系统服务索引）。`fi://` 协议运行时注册（源码安装形态下注册指回仓库路径），Finder 服务、网页或 IM 里的深链都由主进程统一接收：校验路径（绝对路径/存在/是目录，先于任何文件系统探测拒绝网络路径）→ 弹系统确认对话框（取消为默认，防网页驱使 fi 打开任意目录）→ 投递给 fi-sidebar 客户端，复用项目模式同一动作（`workspaces.create` + `uiWorkspace.startSession`）在该文件夹工作区开始新任务。隔离实例（`FI_USER_DATA_DIR`）不注册协议、不装服务，避免冒烟测试污染系统全局状态。
+
+**外链**：window.open 和主框架跳转里的外部 http(s) 一律走系统浏览器；dsh 同源弹窗（如附件预览）开小窗口共享会话。
 - **流式中关窗确认**：preload 监听页面上停止按钮的 aria-label（“停止生成”/“Stop generating”，来自 dsh-client-ui-conversation 的 `input.stop`），流式期间关窗/退出会弹确认。dsh 改版或换语言导致标记失配时静默降级为直接关。
 - **dsh 进程被外部杀掉**：窗口切到内建状态页，自动重启后无缝恢复界面。
 
@@ -98,6 +101,7 @@ Electron main
 
 ## 已知限制
 
+- Finder 服务与 `fi://` 协议随 fi 每次启动安装/注册（自愈式）：源码安装形态下协议注册指向当前 `node_modules` 里的 Electron 二进制，仓库挪动或重装依赖后需重启一次 fi 才恢复。卸载 fi 不会自动清理：服务项手动删除 `~/Library/Services/Open in fi.workflow` 即可；深链确认对话框每次都会弹（外部输入 gate，属有意设计）。Windows/Linux 右键菜单暂未做（fi 主平台为 macOS）
 - dsh 的握手只有 stdout 里一行 URL，无 `--print-url` 之类的机器接口；dsh 升级若改这行格式需要同步 `URL_LINE_RE`（src/main/dsh-process.ts）
 - dev 模式下 macOS 菜单栏应用名显示为 "Electron"（来自 dev bundle 的 Info.plist），打包后即为 fi
 - 忙碌检测只认中文/英文停止按钮文案，其他界面语言降级为不拦截关窗

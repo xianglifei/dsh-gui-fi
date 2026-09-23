@@ -1,5 +1,28 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+// --- Finder 服务 / fi:// 深链投递（见 src/main/finder-open.ts）---
+// 主进程在「确认时」与「窗口每次加载完成」两个时机发送；事件可能早于
+// fi-sidebar 客户端 boot 到达，这里先排队，客户端订阅 onOpen 时冲队列。
+// 回调执行完回执 done，主进程收到才清 pending（重复投递无害：建区幂等 +
+// blank 会话复用）。
+let openListener: ((path: string) => void) | null = null
+const openQueue: { path: string }[] = []
+
+function notifyOpenWorkspace(path: string): void {
+  try {
+    openListener?.(path)
+  } finally {
+    ipcRenderer.send('fi:open-workspace:done', { path })
+  }
+}
+
+ipcRenderer.on('fi:open-workspace', (_event, payload: { path?: unknown }) => {
+  if (payload !== null && typeof payload === 'object' && typeof payload.path === 'string') {
+    if (openListener !== null) notifyOpenWorkspace(payload.path)
+    else openQueue.push({ path: payload.path })
+  }
+})
+
 contextBridge.exposeInMainWorld('fi', {
   retry: () => ipcRenderer.send('fi:retry'),
 
@@ -46,6 +69,18 @@ contextBridge.exposeInMainWorld('fi', {
       const handler = (_event: unknown, plugins: unknown[]) => callback(plugins)
       ipcRenderer.on('fi:plugins:changed', handler)
       return () => ipcRenderer.removeListener('fi:plugins:changed', handler)
+    },
+  },
+
+  // --- Finder 服务 / fi:// 深链投递（见 src/main/finder-open.ts）---
+  // 单订阅方（fi-sidebar 客户端模块），无需取消接口。
+  openWorkspace: {
+    onOpen: (callback: (path: string) => void) => {
+      openListener = callback
+      while (openQueue.length > 0) {
+        const payload = openQueue.shift()
+        if (payload !== undefined) notifyOpenWorkspace(payload.path)
+      }
     },
   },
 })

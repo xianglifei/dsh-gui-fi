@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "node scripts/dev.mjs",
     "start": "pnpm build && electron .",
-    "test:prepare": "tsup src/main/cron.ts src/main/plugin-center.ts --format cjs --external electron --outDir out/test",
+    "test:prepare": "tsup src/main/cron.ts src/main/plugin-center.ts src/main/finder-open.ts --format cjs --external electron --outDir out/test",
     "test": "pnpm test:prepare && node --test tests/*.test.mjs"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { DshProcess } from './dsh-process'
 import { attachCloseGuard } from './close-guard'
+import { installFinderOpenWorkflow, registerFiProtocol, registerOpenFolderBridge } from './finder-open'
 import { registerCronBridge } from './cron'
 import { installMenu } from './menu'
 import { registerPluginCenterBridge } from './plugin-center'
@@ -67,6 +68,7 @@ function showWindow(): BrowserWindow {
   }
   win = createMainWindow()
   attachCloseGuard(win)
+  openFolder.attachWindowHooks(win)
   return win
 }
 
@@ -80,6 +82,13 @@ function reopenAfterActivate(): void {
   // while starting/restarting the url/state events drive the window
 }
 
+// fi:// 深链接收（Finder 服务 / 外部应用）：校验 + 确认后投递给 renderer。
+const openFolder = registerOpenFolderBridge({
+  dsh,
+  getWindow: () => win,
+  showWindow,
+})
+
 app.setName('fi')
 // 冒烟/多开隔离：单实例锁与用户数据都跟着 userData 走（正常路径不受影响）。
 // 必须在 requestSingleInstanceLock 之前设置——锁按 userData 路径区分实例。
@@ -92,7 +101,12 @@ if (!gotLock) {
   app.quit()
 } else {
 
-  app.on('second-instance', () => {
+  // 隔离实例（冒烟/多开）不碰全局系统状态：不注册 fi:// 协议、不装 Finder 服务。
+  const isolated = process.env.FI_USER_DATA_DIR !== undefined && process.env.FI_USER_DATA_DIR !== ''
+  if (!isolated) registerFiProtocol()
+
+  app.on('second-instance', (_event, argv: string[]) => {
+    openFolder.handleInstanceArgv(argv)
     reopenAfterActivate()
   })
 
@@ -102,8 +116,19 @@ if (!gotLock) {
     registerPluginCenterBridge()
     wireDshOnce()
     registerCronBridge(dsh)
+    if (!isolated) {
+      installFinderOpenWorkflow({
+        platform: process.platform,
+        homeDir: app.getPath('home'),
+        logger: {
+          info: (...args: unknown[]) => console.log('[fi]', ...args),
+          warn: (...args: unknown[]) => console.warn('[fi]', ...args),
+        },
+      })
+    }
     showWindow()
     dsh.start()
+    openFolder.flushQueuedUrl()
   })
 
   app.on('activate', () => {
