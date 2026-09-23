@@ -52,6 +52,7 @@ const pureFns = new Function(`
   ${extractFn('deriveProjectGroups')}
   ${extractFn('deriveSearchRows')}
   ${extractFn('relativeTime')}
+  ${extractFn('guardFinderOpen')}
   ${extractFn('cronHasFailure')}
   ${extractFn('cronStatusKind')}
   ${extractFn('cronFilterKind')}
@@ -60,7 +61,7 @@ const pureFns = new Function(`
   ${extractFn('placeToggleHost')}
   const pad2 = (v) => String(v).padStart(2, '0');
   const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
-  return { format, deriveRows, deriveProjectGroups, deriveSearchRows, relativeTime, cronHasFailure, cronStatusKind, cronFilterKind, cronScheduleText, cronFutureRelative, placeToggleHost };
+  return { format, deriveRows, deriveProjectGroups, deriveSearchRows, relativeTime, guardFinderOpen, cronHasFailure, cronStatusKind, cronFilterKind, cronScheduleText, cronFutureRelative, placeToggleHost };
 `)()
 
 // 从 apply() 里捕获真实词典（zh/en）与全部槽位注册
@@ -178,6 +179,200 @@ test('启动钉子：default 一直缺失（服务端 ensure 失败）时退化�
   const h = bootPinHarness()
   h.workspaces.list.set({ phase: 'ready', items: [wsApp], archivedSessionIds: [] })
   h.sessions.list.set(sessionsReady())
+  assert.deepEqual(h.calls, [])
+})
+
+// ---------------------------------------------------------------------------
+// Finder 深链守位（guardFinderOpen：防 dsh 一次性启动恢复把我们翻回 default）
+// ---------------------------------------------------------------------------
+
+/** 可注入时钟与订阅桩的守位测试台：advance 推进时间并触发到期定时器。 */
+function guardHarness() {
+  let now = 1_000
+  const timers = []
+  const calls = []
+  const createCalls = []
+  const mkList = () => {
+    const listeners = new Set()
+    const store = {
+      snapshot: { phase: 'loading', items: [], ids: [], byId: {}, current: undefined, archivedSessionIds: [] },
+      getSnapshot: () => store.snapshot,
+      subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
+      set: (next) => { store.snapshot = next; for (const fn of [...listeners]) fn() },
+    }
+    return store
+  }
+  const deps = {
+    workspaces: { list: mkList() },
+    sessions: {
+      list: mkList(),
+      create: (opts) => { createCalls.push(opts); return Promise.resolve({ ok: true, value: { sessionId: 't2' } }) },
+    },
+    uiWorkspace: {
+      startSession: (id) => calls.push(`start:${id}`),
+      openSession: (id) => calls.push(`open:${id}`),
+    },
+  }
+  const advance = (ms) => {
+    now += ms
+    for (const timer of timers.filter((x) => x.at <= now && !x.fired)) {
+      timer.fired = true
+      timer.fn()
+    }
+  }
+  return {
+    deps,
+    calls,
+    createCalls,
+    advance,
+    flush: () => new Promise((r) => setImmediate(r)),
+    run: (ws) => pureFns.guardFinderOpen(deps, ws, {
+      now: () => now,
+      setTimeout: (fn, ms) => timers.push({ fn, at: now + ms, fired: false }),
+    }),
+  }
+}
+
+const gTarget = { workspaceId: 'ws-tgt', path: '/tmp/tgt', sessionIds: [] }
+const gWsReady = (targetIds = ['t1']) => ({
+  phase: 'ready',
+  archivedSessionIds: [],
+  items: [
+    { title: 'default', workspaceId: 'ws-def', sessionIds: ['d1'] },
+    { title: 'tgt', workspaceId: 'ws-tgt', sessionIds: targetIds },
+  ],
+})
+const gSessions = (current, byId = { d1: { id: 'd1', blank: true }, t1: { id: 't1', blank: true } }) => ({
+  phase: 'ready', ids: Object.keys(byId), byId, current, archivedSessionIds: [],
+})
+
+test('守位：自己的切换未落地前，current 停在 default 空白是正常中间态 → 不纠正', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('d1'))
+  h.run(gTarget)
+  // 自有导航挂起期间的快照抖动（多次 default 空白）都不能烧纠正额度
+  for (let i = 0; i < 5; i++) h.deps.sessions.list.set(gSessions('d1'))
+  h.advance(500) // settle 定时器
+  await h.flush()
+  assert.deepEqual(h.calls, [], '落地前一律无视')
+  assert.deepEqual(h.createCalls, [])
+  // 切换落地 → 进入盯防
+  h.deps.sessions.list.set(gSessions('t1'))
+  // 随后 dsh 启动恢复翻回 default 空白 → 纠正（额度未被烧掉）
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.deepEqual(h.createCalls, [{ workspaceId: 'ws-tgt' }], '优先 sessions.create 全新 RPC（绕开 inflight 表）')
+  assert.deepEqual(h.calls, ['open:t2'], '成功后 openSession 直达 replaceMain')
+})
+
+test('守位：落地后当前已稳定在目标 → settle 到期也不纠正', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.advance(11_000)
+  await h.flush()
+  assert.deepEqual(h.calls, [])
+})
+
+test('守位：落地后被翻回 default 空白 → 重钉目标工作区', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.deepEqual(h.calls, ['open:t2'], '订阅触发即纠正')
+  h.deps.sessions.list.set(gSessions('t2'))
+  assert.deepEqual(h.calls, ['open:t2'], '纠正生效后不再动作')
+})
+
+test('守位：create 失败（RemoteResult not ok）→ 回退 startSession', async () => {
+  const h = guardHarness()
+  h.deps.sessions.create = () => Promise.resolve({ ok: false, error: { code: 'x', message: 'nope' } })
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.deepEqual(h.calls, ['start:ws-tgt'])
+})
+
+test('守位：create 抛错 → 回退 startSession', async () => {
+  const h = guardHarness()
+  h.deps.sessions.create = () => Promise.reject(new Error('transport'))
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.deepEqual(h.calls, ['start:ws-tgt'])
+})
+
+test('守位：sessions.create 面不可用 → 直接 startSession', async () => {
+  const h = guardHarness()
+  delete h.deps.sessions.create
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.deepEqual(h.calls, ['start:ws-tgt'])
+})
+
+test('守位：落地后 current 消失 → 纠正', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.deps.sessions.list.set(gSessions(undefined))
+  await h.flush()
+  assert.deepEqual(h.calls, ['open:t2'])
+})
+
+test('守位：用户停在真实会话（非 blank）→ 不打扰', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.deps.sessions.list.set(gSessions('d1', { d1: { id: 'd1', blank: false } }))
+  await h.flush()
+  assert.deepEqual(h.calls, [], 'default 里的真实会话不动')
+  h.deps.sessions.list.set(gSessions('b1', { b1: { id: 'b1', blank: true } }))
+  await h.flush()
+  assert.deepEqual(h.calls, [], '不在任何工作区的会话（快照抖动）不动')
+})
+
+test('守位：连续被翻回受纠正次数约束（≤3），避免与用户导航打架', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  for (let i = 0; i < 5; i++) h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.equal(h.createCalls.length, 3, '上限后不再纠正')
+})
+
+test('守位：落地窗口（10s）过后不再纠正', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  h.run(gTarget)
+  h.advance(11_000)
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
+  assert.deepEqual(h.calls, [], '窗口过后掉回也不纠正')
+})
+
+test('守位：返回取消函数，撤销后退订不再纠正', async () => {
+  const h = guardHarness()
+  h.deps.workspaces.list.set(gWsReady())
+  h.deps.sessions.list.set(gSessions('t1'))
+  const stop = h.run(gTarget)
+  stop()
+  h.deps.sessions.list.set(gSessions('d1'))
+  await h.flush()
   assert.deepEqual(h.calls, [])
 })
 

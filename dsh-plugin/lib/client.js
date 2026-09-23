@@ -955,6 +955,84 @@ button[class*="_newSession"] { display: none !important; }
 			if (months < 12) return format(t("time.months"), { n: months });
 			return format(t("time.years"), { n: Math.floor(months / 12) });
 		}
+
+		/**
+		 * Finder 深链打开后的守位。dsh 的一次性启动恢复（ui-workspace 的
+		 * restoreSelection）在 stores 就绪后才落定，且内部也要走一次会话创建
+		 * （可能被偶发挂起拖到很晚）——它晚于我们的导航落地时，会把当前会话
+		 * 改回「上次退出时选中」（通常是 default 的空白会话），后发导航胜，
+		 * 表现为切到文件夹一闪后被翻回 default。fi 侧够不着它的内部，只能守位：
+		 * 先等自己的切换真正落地（current 进入目标工作区；会话创建可能挂起，
+		 * 落地前的快照抖动一律无视），落地后短窗内盯住快照——当前会话掉回
+		 * default 空白（或消失）就重钉目标工作区。纠正带次数与期限上限，且只认
+		 * 「default 空白」这一种掉回形态，用户停在真实会话上不打扰（恢复只跑
+		 * 一次，两次纠正足够）。返回取消函数（重复投递时旧守位先撤）。
+		 * opts.now/setTimeout/windowMs/maxCorrections 可注入（单测）。
+		 */
+		function guardFinderOpen(deps, ws, options) {
+			const opts = options ?? {}
+			const now = opts.now ?? Date.now
+			const schedule = opts.setTimeout ?? ((fn, ms) => setTimeout(fn, ms))
+			const windowMs = opts.windowMs ?? 10_000
+			const maxCorrections = opts.maxCorrections ?? 3
+			const outerCapMs = opts.outerCapMs ?? 60_000
+			let corrections = 0
+			let landed = false
+			let deadline = Infinity
+			const born = now()
+			const correct = () => {
+				// 优先绕开 uiWorkspace.connectWorkspace 的 inflight 表：投递重试场景里
+				// 挂起的旧建会话承诺还占着表项，startSession 的纠正会被同一张表吸住
+				// （拿到同一个挂死 Promise）。直接走 sessions.create 发全新 RPC，
+				// 成功后 openSession 直达 replaceMain；面不可用/失败再回退 startSession。
+				if (typeof deps.sessions.create === 'function') {
+					Promise.resolve()
+						.then(() => deps.sessions.create({ workspaceId: ws.workspaceId }))
+						.then((result) => {
+							if (result?.ok === true && result.value?.sessionId !== undefined) {
+								deps.uiWorkspace.openSession(result.value.sessionId)
+							} else {
+								deps.uiWorkspace.startSession(ws.workspaceId)
+							}
+						})
+						.catch(() => { deps.uiWorkspace.startSession(ws.workspaceId) })
+				} else {
+					deps.uiWorkspace.startSession(ws.workspaceId)
+				}
+			}
+			const check = () => {
+				if (now() - born > outerCapMs) return
+				const wsList = deps.workspaces.list.getSnapshot()
+				const sl = deps.sessions.list.getSnapshot()
+				const current = sl.current
+				const live = wsList.items.find((w) => w.workspaceId === ws.workspaceId)
+				const inTarget = current !== undefined && live !== undefined && live.sessionIds.includes(current)
+				if (!landed) {
+					// 落地判定（不含纠正窗口计时）；落地前的 default 空白是自有导航
+					// 未完成的正常中间态，无视，避免烧掉纠正额度。
+					if (inTarget) {
+						landed = true
+						deadline = now() + windowMs
+					}
+					return
+				}
+				if (corrections >= maxCorrections || now() > deadline) return
+				if (inTarget) return
+				if (current !== undefined) {
+					const home = wsList.items.find((w) => w.sessionIds.includes(current))
+					if (home === undefined || home.title !== DEFAULT_WORKSPACE_TITLE || sl.byId[current]?.blank !== true) return
+				}
+				corrections += 1
+				correct()
+			};
+			const disposeWorkspaces = deps.workspaces.list.subscribe(check)
+			const disposeSessions = deps.sessions.list.subscribe(check)
+			check()
+			schedule(check, opts.settleMs ?? 400)
+			const stop = () => { disposeWorkspaces(); disposeSessions() }
+			schedule(stop, outerCapMs + 500)
+			return stop
+		}
 		//#endregion
 
 		//#region components
@@ -3180,6 +3258,8 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 			// 切过去的文件夹工作区（用户实测：闪切到文件夹一秒后被钉回 default）。
 			// 钉子先落定、深链后到时不受影响，两种时序终态都是目标文件夹。
 			let finderOpenActive = false;
+			// 深链守位句柄（重复投递时旧守位先撤，见 onOpen）。
+			let activeFinderGuard = null;
 
 			ctx.effect(() => {
 				// 启动钉子：dsh 原生 watchNavigation 在无当前会话时按「最近活动」挑
@@ -3244,11 +3324,20 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 			// 与项目模式「在文件夹里新建任务」同一动作；浏览器直开 dsh（无
 			// window.fi 桥）或插件降级时静默跳过，主进程留存待重投。回执只在
 			// 动作完成后发（成功 null / 失败带错误文案），主进程据此清账或重投。
-			// 落地即压制启动钉子（见上方 finderOpenActive 注释）。
+			// 落地即压制启动钉子（见上方 finderOpenActive 注释），成功后守位
+			// （guardFinderOpen）防 dsh 一次性启动恢复把我们翻回 default。
 			if (typeof window !== "undefined" && window.fi?.openWorkspace) {
 				window.fi.openWorkspace.onOpen((dirPath) => {
 					finderOpenActive = true;
-					startNewTaskIn(dirPath).then((err) => window.fi.openWorkspace.ack(dirPath, err));
+					workspaces.create({ path: dirPath })
+						.then((ws) => {
+							uiWorkspace.startSession(ws.workspaceId);
+							if (activeFinderGuard !== null) activeFinderGuard();
+							activeFinderGuard = guardFinderOpen({ workspaces, sessions, uiWorkspace }, ws);
+							return null;
+						})
+						.catch((err) => err?.message ?? String(err))
+						.then((err) => window.fi.openWorkspace.ack(dirPath, err));
 				});
 			}
 
