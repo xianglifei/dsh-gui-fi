@@ -3175,6 +3175,12 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "fi-sidebar: dictionaries");
 
+			// Finder 深链打开（主进程投递）时压制下方启动钉子：钉子会在 default
+			// 晚到时把「default 之外的空白会话」改钉回 default，恰好吃掉深链刚
+			// 切过去的文件夹工作区（用户实测：闪切到文件夹一秒后被钉回 default）。
+			// 钉子先落定、深链后到时不受影响，两种时序终态都是目标文件夹。
+			let finderOpenActive = false;
+
 			ctx.effect(() => {
 				// 启动钉子：dsh 原生 watchNavigation 在无当前会话时按「最近活动」挑
 				// 初始工作区，冷启动可能落在 Applications 这类历史工作区；fi 的语义是
@@ -3184,7 +3190,7 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 				// 一个快照再钉；期间 dsh 若已兜底在别处开了空白会话，一并改钉。
 				let armed = true;
 				const pin = () => {
-					if (!armed) return;
+					if (!armed || finderOpenActive) return;
 					const workspace = workspaces.list.getSnapshot();
 					const sessionList = sessions.list.getSnapshot();
 					if (workspace.phase !== "ready" || sessionList.phase !== "ready") return;
@@ -3238,8 +3244,10 @@ function ActionButton({ label, icon: iconName, onClick, pressed, current }) {
 			// 与项目模式「在文件夹里新建任务」同一动作；浏览器直开 dsh（无
 			// window.fi 桥）或插件降级时静默跳过，主进程留存待重投。回执只在
 			// 动作完成后发（成功 null / 失败带错误文案），主进程据此清账或重投。
+			// 落地即压制启动钉子（见上方 finderOpenActive 注释）。
 			if (typeof window !== "undefined" && window.fi?.openWorkspace) {
 				window.fi.openWorkspace.onOpen((dirPath) => {
+					finderOpenActive = true;
 					startNewTaskIn(dirPath).then((err) => window.fi.openWorkspace.ack(dirPath, err));
 				});
 			}
