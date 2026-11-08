@@ -35,8 +35,8 @@ fi 目前以源码方式安装（打包 dmg 见路线图）。前置要求：
 - dsh CLI：`npm install -g @deepseek-ai/dsh`
 
 ```bash
-git clone https://github.com/xianglifei/fi.git
-cd fi
+git clone https://github.com/xianglifei/dsh-gui-fi.git
+cd dsh-gui-fi
 pnpm install
 pnpm start      # 构建并启动
 ```
