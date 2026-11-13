@@ -4,7 +4,7 @@
 
 ## 发版规则（必须遵守）
 
-用户明确要求：**只要有新版本推送到 GitHub，必须同步更新 CHANGELOG.md**。执行标准：
+用户明确要求：**只要有新版本推送到 GitHub，必须同步更新 CHANGELOG.md，并创建对应的 GitHub Release**。执行标准：
 
 1. 任何功能或修复合入 main 时，在 CHANGELOG.md 的 `[Unreleased]` 下补一条面向用户的说明（新增/变更/修复分类）。
 2. 推送新版本之前：
@@ -14,6 +14,11 @@
    - 以上内容与版本提交一起推送，不允许先推代码后补记录。
 3. 版本号取向：bug 修复升补丁号（0.1.x），新功能升次版本号（0.x.0），破坏性变更升主版本号。
 4. CHANGELOG 条目用中文，面向使用者描述「变了什么、对使用有什么影响」，不写实现细节流水账。
+5. 每个版本必须创建 GitHub Release，只推 tag 不建 release 视为发版未完成：
+   - tag 形如 `vX.Y.Z`，与 package.json、CHANGELOG 的版本号一致；
+   - 标题 `fi X.Y.Z`，正文取自 CHANGELOG 对应版本段（中文、面向使用者），末尾补安装命令与介绍页链接；
+   - 命令：`gh release create vX.Y.Z --title "fi X.Y.Z" --notes-file notes.md --verify-tag --latest`；
+   - 有打包产物（dmg 等）时作为 assets 挂到同一个 release 上，不另建 release。
 
 ## 其他约定
 
