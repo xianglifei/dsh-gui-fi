@@ -2,6 +2,8 @@
 
 `fi` —— dsh 的 Electron 桌面壳。这里是它的静态介绍页，GitHub Pages 从 `main` 分支的 `/docs` 目录发布。
 
+线上地址：<https://xianglifei.github.io/dsh-gui-fi/>
+
 ## 文件
 
 ```
