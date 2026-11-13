@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>fi · OG</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+    background-color: #ffffff;
+    background-image: radial-gradient(circle, rgba(15, 17, 21, .14) 1px, transparent 1.15px);
+    background-size: 22px 22px;
+    background-position: 11px 11px;
+    color: #0f1115;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    padding: 54px 60px 0;
+    display: grid;
+    grid-template-columns: 1fr 430px;
+    gap: 44px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .mark {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: #0f1115; color: #fff;
+    display: grid; place-items: center;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .22);
+  }
+  .mark svg { width: 18px; height: 18px; }
+  .name { font-size: 21px; font-weight: 600; letter-spacing: -.02em; }
+  .meta { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .14em; color: #6b7077; }
+  h1 {
+    margin: 34px 0 0;
+    font-size: 47px;
+    line-height: 1.16;
+    font-weight: 600;
+    letter-spacing: -.04em;
+  }
+  .lead {
+    margin: 20px 0 0;
+    max-width: 600px;
+    font-size: 15px;
+    line-height: 26px;
+    color: #61666b;
+  }
+  .checks { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 24px; font-size: 12.5px; color: #3f444a; }
+  .checks span { display: inline-flex; align-items: center; gap: 6px; }
+  .checks svg { width: 13px; height: 13px; color: #22c55e; }
+  .url {
+    position: absolute;
+    left: 60px;
+    bottom: 40px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    letter-spacing: .05em;
+    color: #6b7077;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .url .dot { width: 5px; height: 5px; border-radius: 50%; background: #22c55e; }
+
+  /* 右侧窗口示意 */
+  .win {
+    align-self: center;
+    margin-top: 6px;
+    border: 1px solid rgba(15, 17, 21, .1);
+    border-radius: 14px;
+    background: #fff;
+    box-shadow:
+      0 2px 4px rgba(15, 23, 42, .06),
+      0 18px 40px -18px rgba(15, 23, 42, .25),
+      0 60px 100px -60px rgba(15, 23, 42, .35);
+    overflow: hidden;
+    transform: translateY(-2px);
+  }
+  .win-bar {
+    height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 11px;
+    border-bottom: 1px solid rgba(15, 17, 21, .055);
+    background: linear-gradient(#fdfdfe, #f7f8f9);
+  }
+  .win-bar i { width: 8px; height: 8px; border-radius: 50%; background: #e6e8eb; box-shadow: inset 0 0 0 1px rgba(15, 17, 21, .07); }
+  .win-bar .t { margin-left: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9px; color: #6b7077; }
+  .win-body { display: grid; grid-template-columns: 132px 1fr; height: 372px; }
+  .side { border-right: 1px solid rgba(15, 17, 21, .055); background: #f7f8f9; padding: 10px 8px; }
+  .side .logo { display: flex; align-items: center; justify-content: space-between; padding: 0 3px 8px; color: #4a5057; }
+  .side .logo svg { width: 16px; height: 16px; }
+  .side .logo .acts { display: flex; gap: 3px; color: #9aa0a7; }
+  .side .row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 6px; border-radius: 6px;
+    font-size: 10.5px; color: #61666b;
+  }
+  .side .row svg { width: 12px; height: 12px; color: #6b7077; }
+  .side .row.is-on { background: #edeff1; color: #0f1115; }
+  .side .kbd { margin-left: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 8px; color: #9aa0a7; }
+  .side .sep {
+    margin-top: 8px; padding: 8px 6px 4px;
+    border-top: 1px solid rgba(15, 17, 21, .055);
+    display: flex; align-items: center; gap: 5px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 8px; letter-spacing: .1em; color: #9aa0a7;
+  }
+  .side .sep svg { width: 11px; height: 11px; }
+  .side .task { padding: 6px; border-radius: 6px; font-size: 10px; color: #61666b; }
+  .side .task span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side .task .when { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 8px; color: #9aa0a7; margin-top: 2px; }
+  .side .task.is-active { background: #fff; border: 1px solid rgba(15, 17, 21, .1); color: #0f1115; box-shadow: 0 1px 2px rgba(15, 23, 42, .05); }
+  .side .group { margin: 7px 6px 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 8px; letter-spacing: .08em; color: #9aa0a7; }
+  .main { display: flex; flex-direction: column; }
+  .main-head { padding: 10px 13px; border-bottom: 1px solid rgba(15, 17, 21, .055); font-size: 11.5px; font-weight: 600; }
+  .chat { padding: 13px; display: grid; gap: 10px; align-content: start; }
+  .role { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 7.5px; letter-spacing: .13em; color: #9aa0a7; margin-bottom: 4px; }
+  .bubble { padding: 8px 9px; border: 1px solid rgba(15, 17, 21, .055); border-radius: 8px; background: #f6f7f8; font-size: 10px; line-height: 1.6; color: #61666b; }
+  .reply { font-size: 10px; line-height: 1.7; color: #61666b; }
+  .reply ul { margin: 5px 0 0; padding-left: 11px; }
+  .reply li { font-size: 9.5px; line-height: 1.6; }
+  .composer { margin-top: auto; padding: 0 13px 13px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 1px solid rgba(15, 17, 21, .1); border-radius: 5px; background: #f6f7f8; font-size: 8px; color: #6b7077; }
+  .box { margin-top: 5px; padding: 8px 9px; border: 1px solid rgba(15, 17, 21, .1); border-radius: 8px; font-size: 9.5px; line-height: 1.6; color: #61666b; background: #fff; }
+  .box .foot { display: flex; align-items: center; gap: 4px; margin-top: 7px; }
+  .pill { padding: 1px 5px; border: 1px solid rgba(15, 17, 21, .1); border-radius: 999px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 7.5px; color: #6b7077; }
+  .send { margin-left: auto; width: 17px; height: 17px; border-radius: 5px; background: #0f1115; color: #fff; display: grid; place-items: center; }
+  .send svg { width: 10px; height: 10px; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div>
+    <div class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 6.5h.01M10 6.5h.01"/></svg>
+      </span>
+      <span class="name">fi</span>
+      <span class="meta">DSH DESKTOP SHELL</span>
+    </div>
+    <h1>dsh 还是那个 dsh，<br>只是住进了原生窗口。</h1>
+    <p class="lead">一个 Electron 外壳：spawn 你本机装的 dsh，把它装进真正的 macOS 窗口。独立 profile、关窗保活、项目模式与 Finder 集成。</p>
+    <div class="checks">
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>页面零改动</span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>关窗保活</span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>跟 dsh 一起升级</span>
+    </div>
+  </div>
+
+  <div class="win">
+    <div class="win-bar"><i></i><i></i><i></i><span class="t">fi</span></div>
+    <div class="win-body">
+      <div class="side">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 12c1.9-2.9 4.3-4.4 7.2-4.4 3.2 0 5.8 1.6 7.1 4.4-1.3 2.8-3.9 4.4-7.1 4.4-2.9 0-5.3-1.5-7.2-4.4Z"/><circle cx="17" cy="10.7" r="1" fill="currentColor" stroke="none"/><path d="M7 12 2.4 7.6M7 12 2.4 16.4"/></svg>
+          <span class="acts">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </span>
+        </div>
+        <div class="row is-on">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+          新建任务<span class="kbd">⌘N</span>
+        </div>
+        <div class="row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          搜索<span class="kbd">⌘K</span>
+        </div>
+        <div class="row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M5 3 2 6"/><path d="m22 6-3-3"/></svg>
+          定时任务
+        </div>
+        <div class="row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"/><rect x="14" y="2" width="8" height="8" rx="1"/></svg>
+          插件中心
+        </div>
+        <div class="sep">任务
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg>
+        </div>
+        <div class="task is-active"><span>官网文案与对比表</span><span class="when">刚刚</span></div>
+        <div class="task"><span>Finder 深链的确认时序</span><span class="when">今天 14:02</span></div>
+        <div class="group">项目 · DSH-GUI-FI</div>
+        <div class="task"><span>项目模式：隐藏项显隐</span><span class="when">昨天</span></div>
+        <div class="task"><span>定时任务面板的筛选</span><span class="when">昨天</span></div>
+      </div>
+      <div class="main">
+        <div class="main-head">官网文案与对比表</div>
+        <div class="chat">
+          <div>
+            <div class="role">YOU</div>
+            <div class="bubble">按 docs/official-desktop-comparison.md 的口径改文案。</div>
+          </div>
+          <div class="reply">
+            已按对比文档改完，三处收敛：
+            <ul>
+              <li>外挂壳 vs 内置壳只讲取舍</li>
+              <li>升级节奏写具体天数</li>
+              <li>去掉路线图里的未来计划</li>
+            </ul>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="chip">引用 · 2 条</div>
+          <div class="box">
+            再看一遍 docs/official-desktop-comparison.md。
+            <div class="foot">
+              <span class="pill">default</span>
+              <span class="pill">@path</span>
+              <span class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6.5 11.5 12 6l5.5 5.5"/></svg></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="url"><span class="dot"></span>github.com/xianglifei/dsh-gui-fi</div>
+</body>
+</html>
